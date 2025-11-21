@@ -122,3 +122,29 @@ if uploaded_file is not None:
             csv_buffer = daily_stats.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
             
             # 2. 圖片
+            img_buffer = io.BytesIO()
+            fig.savefig(img_buffer, format='png')
+            img_buffer.seek(0)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    label="📥 下載分析報表 (CSV)",
+                    data=csv_buffer,
+                    file_name="daily_ads_forensics.csv",
+                    mime="text/csv",
+                )
+            with col2:
+                st.download_button(
+                    label="🖼️ 下載趨勢圖表 (PNG)",
+                    data=img_buffer,
+                    file_name="daily_ads_trends.png",
+                    mime="image/png",
+                )
+                
+            # 顯示數據預覽
+            st.subheader("數據明細預覽")
+            st.dataframe(daily_stats.tail(10))
+            
+    except Exception as e:
+        st.error(f"無法處理檔案，請確認格式是否正確。錯誤訊息：{e}")
