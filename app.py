@@ -5,9 +5,9 @@ import matplotlib.font_manager as fm
 import os
 import urllib.request
 
-# --- 1. 基礎設定 (版本標記 v3.0) ---
-st.set_page_config(page_title="廣告成效分析 v3.0", layout="wide")
-st.title("📊 每日廣告成效趨勢分析 (v3.0 最終版)")
+# --- 1. 基礎設定 (版本標記 v3.2) ---
+st.set_page_config(page_title="廣告成效分析 v3.2", layout="wide")
+st.title("📊 每日廣告成效趨勢分析 (v3.2 支援匯出)")
 
 # --- 2. 解決中文字型 ---
 @st.cache_resource
@@ -33,7 +33,7 @@ if uploaded_file is not None:
         df = pd.read_csv(uploaded_file)
         all_columns = df.columns.tolist()
         
-        st.success(f"✅ 檔案讀取成功！系統偵測到 {len(all_columns)} 個欄位。")
+        st.success(f"✅ 檔案讀取成功！")
 
         st.markdown("### 🛠️ 1. 欄位對應設定")
         
@@ -41,10 +41,8 @@ if uploaded_file is not None:
         suggested_index = 0
         for idx, col in enumerate(all_columns):
             c_low = col.lower()
-            # 排除成本欄位
             if '成本' in col or 'cost' in c_low or 'cpa' in c_low: continue
             
-            # 尋找關鍵字 (不分大小寫，不分符號)
             if ('free' in c_low and 'course' in c_low): 
                 suggested_index = idx
                 break
@@ -57,9 +55,8 @@ if uploaded_file is not None:
 
         c1, c2 = st.columns(2)
         with c1:
-            # 這裡的 options 是直接從檔案欄位來的，所以絕對不會報錯
             conversion_col = st.selectbox(
-                "🎯 請確認您的「轉換 (Conversion)」欄位：",
+                "🎯 請確認您的「轉換」欄位：",
                 options=all_columns,
                 index=suggested_index
             )
@@ -83,28 +80,39 @@ if uploaded_file is not None:
         if missing_cols:
             st.error(f"❌ 找不到以下關鍵欄位 {missing_cols}，無法繪圖。")
         else:
-            # 安全填補空值 (關鍵：這裡只填補存在的欄位，不會去填補 'free course')
+            # 安全填補空值
             cols_to_clean = [impressions_col, spend_col, clicks_col, conversion_col]
             for col in cols_to_clean:
                 df[col] = df[col].fillna(0)
             
             df['天數'] = pd.to_datetime(df['天數'])
             
-            # 每日加總 (使用變數 conversion_col)
+            # 每日加總
             daily = df.groupby('天數')[cols_to_clean].sum().reset_index()
             
             # 計算 KPI
             daily['CPM'] = daily.apply(lambda x: (x[spend_col]/x[impressions_col]*1000) if x[impressions_col]>0 else 0, axis=1)
             daily['CTR'] = daily.apply(lambda x: (x[clicks_col]/x[impressions_col]) if x[impressions_col]>0 else 0, axis=1)
-            
-            # 這裡使用 conversion_col 變數，保證與 selectbox 一致
             daily['CVR'] = daily.apply(lambda x: (x[conversion_col]/x[clicks_col]) if x[clicks_col]>0 else 0, axis=1)
             
-            # 繪圖數據
+            # 繪圖數據 (只保留有花費的日子)
             plot_df = daily[daily[spend_col] > 0].copy()
             plot_df['日期str'] = plot_df['天數'].dt.strftime('%m-%d')
+            
+            # --- [新增] 準備下載按鈕用的 CSV ---
+            # 整理一下欄位順序，讓下載的表格更易讀
+            export_df = plot_df.rename(columns={
+                '天數': '日期',
+                impressions_col: '曝光數',
+                spend_col: '花費',
+                clicks_col: '連結點擊',
+                conversion_col: '轉換數'
+            })
+            # 選擇要輸出的欄位
+            final_export = export_df[['日期', '曝光數', '花費', 'CPM', '連結點擊', 'CTR', '轉換數', 'CVR']]
+            csv_data = final_export.to_csv(index=False).encode('utf-8-sig')
 
-            # --- 5. 呈現圖表 ---
+            # --- 5. 呈現圖表與下載 ---
             st.divider()
             st.subheader(f"📈 分析報告：{conversion_col}")
             
@@ -118,7 +126,16 @@ if uploaded_file is not None:
             m2.metric(f"總轉換 ({conversion_col})", f"{total_conv:,.0f}")
             m3.metric("平均轉換成本 (CPA)", f"${cpa:,.0f}")
 
-            # 圖表設定
+            # --- [新增] 下載按鈕區 ---
+            st.download_button(
+                label="📥 下載分析結果報表 (CSV)",
+                data=csv_data,
+                file_name='daily_ad_report.csv',
+                mime='text/csv',
+                help="點擊下載整理好的每日數據，包含計算後的 CTR 與 CVR"
+            )
+
+            # 圖表繪製
             metrics = [
                 (impressions_col, '曝光數', 'blue'),
                 (spend_col, '花費', 'red'),
@@ -139,7 +156,7 @@ if uploaded_file is not None:
                 if font_prop:
                     ax.set_title(title, fontproperties=font_prop, fontsize=14)
                     ax.set_xlabel('日期', fontproperties=font_prop)
-                    for label in ax.get_xticklabels() + ax.get_yticklabels():
+                    for label in ax.get_yticklabels() + ax.get_yticklabels():
                         label.set_fontproperties(font_prop)
                 else:
                     ax.set_title(title)
@@ -154,8 +171,8 @@ if uploaded_file is not None:
             plt.tight_layout()
             st.pyplot(fig)
             
-            with st.expander("查看原始數據"):
-                st.dataframe(plot_df)
+            with st.expander("查看原始數據預覽"):
+                st.dataframe(final_export)
 
     except Exception as e:
         st.error(f"發生未預期的錯誤: {e}")
