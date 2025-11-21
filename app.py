@@ -141,4 +141,34 @@ if uploaded_file is not None:
                 ax.plot(plot_data['日期str'], plot_data[col], marker='o', color=color, linewidth=2)
                 
                 if font_prop:
-                    ax.set_title(title
+                    ax.set_title(title, fontproperties=font_prop, fontsize=14)
+                    ax.set_xlabel('日期', fontproperties=font_prop)
+                    for label in ax.get_yticklabels() + ax.get_xticklabels():
+                        label.set_fontproperties(font_prop)
+                else:
+                    ax.set_title(title)
+                
+                ax.grid(True, linestyle='--', alpha=0.7)
+                
+                # 標註
+                for x, y in zip(plot_data['日期str'], plot_data[col]):
+                    if col in ['CTR', 'CVR']:
+                        label_text = f"{y:.1%}"
+                    else:
+                        label_text = f"{y:.0f}"
+                    ax.annotate(label_text, (x, y), textcoords="offset points", xytext=(0,8), ha='center', fontsize=9)
+
+            if len(metrics_config) < len(axes):
+                axes[len(metrics_config)].axis('off')
+                
+            plt.tight_layout()
+            st.pyplot(fig)
+            
+            with st.expander("查看原始數據表格"):
+                st.dataframe(plot_data)
+
+    except Exception as e:
+        st.error(f"處理檔案時發生錯誤: {e}")
+        st.info("請檢查 CSV 檔案格式是否正確，或嘗試重新匯出報表。")
+else:
+    st.info("請上傳 CSV 檔案以開始分析")
