@@ -3,11 +3,43 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import matplotlib.font_manager as fm
 import io
+import os
+import requests
 
-# --- 設定繪圖字型 (盡量支援中文) ---
-plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'SimHei', 'Arial', 'WenQuanYi Zen Hei']
-plt.rcParams['axes.unicode_minus'] = False
+# --- 核心修正：自動下載並設定中文字型 ---
+def configure_chinese_font():
+    # 字型檔案名稱
+    font_filename = "NotoSansTC-Regular.ttf"
+    
+    # 如果檔案不存在，從 Google Fonts 下載 (使用 Github Raw 連結)
+    if not os.path.exists(font_filename):
+        with st.spinner("正在下載中文字型檔 (首次執行需時較久)..."):
+            try:
+                url = "https://github.com/google/fonts/raw/main/ofl/notosanstc/NotoSansTC-Regular.ttf"
+                response = requests.get(url)
+                with open(font_filename, "wb") as f:
+                    f.write(response.content)
+                st.success("中文字型下載完成！")
+            except Exception as e:
+                st.error(f"字型下載失敗，圖表中文可能無法顯示。錯誤：{e}")
+                return None
+
+    # 將字型加入 Matplotlib 管理器
+    try:
+        fm.fontManager.addfont(font_filename)
+        plt.rcParams['font.family'] = 'Noto Sans TC'
+        return True
+    except Exception as e:
+        st.warning(f"字型設定失敗：{e}")
+        return None
+
+# 執行字型設定
+configure_chinese_font()
+plt.rcParams['axes.unicode_minus'] = False # 解決負號顯示問題
+
+# --- 以下為分析邏輯 (保持不變) ---
 
 def find_conversion_column(df):
     """智慧偵測轉換欄位名稱 (處理 free course 與 free-course 的差異)"""
@@ -27,23 +59,21 @@ def find_conversion_column(df):
 
 def analyze_data(df):
     """執行核心分析邏輯"""
-    # 1. 基本欄位檢查
     if '天數' not in df.columns:
         st.error("錯誤：CSV 中找不到 '天數' 欄位。")
         return None
 
     df['Date'] = pd.to_datetime(df['天數'])
     
-    # 2. 偵測轉換欄位
+    # 偵測轉換欄位
     conv_col = find_conversion_column(df)
     if conv_col is None:
         st.warning("⚠️ 警告：找不到 'free course' 相關欄位，轉換數將顯示為 0。")
         df['Conversions'] = 0
     else:
-        st.info(f"已自動偵測到轉換欄位：{conv_col}")
         df['Conversions'] = pd.to_numeric(df[conv_col], errors='coerce').fillna(0)
 
-    # 3. 填補與轉換數值
+    # 填補與轉換數值
     fill_cols = ['曝光次數', '花費金額 (TWD)', '連結點擊次數', '連結頁面瀏覽次數']
     for col in fill_cols:
         if col in df.columns:
@@ -51,7 +81,7 @@ def analyze_data(df):
         else:
             df[col] = 0
             
-    # 4. 每日數據聚合
+    # 每日數據聚合
     daily_stats = df.groupby('Date').agg({
         '曝光次數': 'sum',
         '花費金額 (TWD)': 'sum',
@@ -59,14 +89,11 @@ def analyze_data(df):
         'Conversions': 'sum'
     }).reset_index()
 
-    # 5. 計算關鍵指標 (避免除以零)
-    # CPM
+    # 計算關鍵指標
     daily_stats['CPM'] = np.where(daily_stats['曝光次數'] > 0, 
                                   (daily_stats['花費金額 (TWD)'] / daily_stats['曝光次數']) * 1000, 0)
-    # CTR (點擊率)
     daily_stats['CTR'] = np.where(daily_stats['曝光次數'] > 0, 
                                   (daily_stats['連結點擊次數'] / daily_stats['曝光次數']) * 100, 0)
-    # CVR (連結點擊轉換率)
     daily_stats['CVR'] = np.where(daily_stats['連結點擊次數'] > 0, 
                                   (daily_stats['Conversions'] / daily_stats['連結點擊次數']) * 100, 0)
 
@@ -74,10 +101,8 @@ def analyze_data(df):
 
 def plot_charts(plot_data):
     """繪製 7 大關鍵指標波動圖"""
-    # 設定畫布大小 (高一點以便容納所有圖表)
     fig, axes = plt.subplots(7, 1, figsize=(12, 24), sharex=True)
     
-    # 定義要畫的指標：(欄位名, 中文標題, 線條顏色)
     metrics = [
         ('曝光次數', '曝光數 (Impressions)', 'tab:blue'),
         ('花費金額 (TWD)', '花費 (Spend)', 'tab:green'),
@@ -90,10 +115,9 @@ def plot_charts(plot_data):
 
     for ax, (col, title, color) in zip(axes, metrics):
         ax.plot(plot_data['Date'], plot_data[col], marker='.', linestyle='-', color=color, linewidth=1.5)
-        ax.set_title(title, fontsize=12, fontweight='bold')
+        ax.set_title(title, fontsize=14, fontweight='bold') # 字型大小調大一點
         ax.grid(True, alpha=0.3)
         
-        # 標註最大值
         if not plot_data[col].empty and plot_data[col].max() > 0:
             max_val = plot_data[col].max()
             max_date = plot_data.loc[plot_data[col].idxmax(), 'Date']
@@ -104,14 +128,14 @@ def plot_charts(plot_data):
 
     plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
     plt.xticks(rotation=45)
-    plt.xlabel('日期')
+    plt.xlabel('日期', fontsize=12)
     plt.tight_layout()
     
     return fig
 
 # --- Streamlit 介面 ---
 st.title("📊 廣告成效核心指標看板")
-st.markdown("上傳 CSV 後，系統將自動偵測欄位並呈現您指定的 7 大指標波動。")
+st.markdown("上傳 CSV 後，系統將自動呈現您指定的 7 大指標波動。")
 
 uploaded_file = st.file_uploader("請上傳廣告分析報表 (CSV)", type="csv")
 
@@ -123,7 +147,7 @@ if uploaded_file is not None:
         if daily_stats is not None:
             st.success("分析完成！")
             
-            # 準備下載用的 CSV (欄位中文化)
+            # 顯示下載按鈕與圖表
             output_cols = {
                 'Date': '日期',
                 '曝光次數': '曝光數',
@@ -136,18 +160,15 @@ if uploaded_file is not None:
             }
             csv_df = daily_stats.rename(columns=output_cols)
             
-            # 過濾掉完全沒數據的早期日期，讓圖表好看一點
             start_date = daily_stats[daily_stats['曝光次數'] > 0]['Date'].min()
             if pd.isna(start_date):
-                plot_data = daily_stats # 全空
+                plot_data = daily_stats
             else:
                 plot_data = daily_stats[daily_stats['Date'] >= start_date]
 
-            # 繪圖
             fig = plot_charts(plot_data)
             st.pyplot(fig)
             
-            # 下載按鈕
             csv_buffer = csv_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
             img_buffer = io.BytesIO()
             fig.savefig(img_buffer, format='png')
