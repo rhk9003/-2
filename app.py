@@ -1,47 +1,24 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-import tkinter as tk
-from tkinter import filedialog
-import os
+import io
 
-def select_file():
-    """開啟視窗讓使用者選擇 CSV 檔案"""
-    root = tk.Tk()
-    root.withdraw()  # 隱藏主視窗
-    file_path = filedialog.askopenfilename(
-        title="請選擇 Facebook 廣告分析報表 (CSV)",
-        filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")]
-    )
-    return file_path
+# 設定中文字型 (為了讓雲端環境也能盡量顯示中文)
+# 在 Streamlit Cloud 上通常需要額外設定字型，這裡使用通用設定
+plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'SimHei', 'Arial', 'WenQuanYi Zen Hei']
+plt.rcParams['axes.unicode_minus'] = False
 
-def analyze_with_forensics():
-    # 1. 呼叫檔案選擇視窗
-    print("正在開啟檔案選擇視窗，請稍候...")
-    file_path = select_file()
-    
-    if not file_path:
-        print("未選擇任何檔案，程式結束。")
-        return
-
-    print(f"正在分析檔案：{file_path}")
-    
-    # 2. 讀取資料
-    try:
-        df = pd.read_csv(file_path)
-    except Exception as e:
-        print(f"讀取檔案失敗：{e}")
-        return
-
-    # 3. 資料前處理
+def analyze_data(df):
+    """執行核心分析邏輯"""
+    # 1. 資料清理
     if '天數' not in df.columns:
-        print("錯誤：CSV 中找不到 '天數' 欄位，請確認匯出的報表格式是否正確。")
-        return
+        st.error("錯誤：CSV 中找不到 '天數' 欄位，請確認匯出的報表格式是否正確。")
+        return None, None
 
     df['Date'] = pd.to_datetime(df['天數'])
     
-    # 填補 NaN 為 0
     fill_cols = ['曝光次數', '花費金額 (TWD)', '連結點擊次數', '連結頁面瀏覽次數', 'free course']
     for col in fill_cols:
         if col in df.columns:
@@ -49,10 +26,10 @@ def analyze_with_forensics():
         else:
             df[col] = 0
 
-    # 4. 每日數據聚合
+    # 2. 每日數據聚合
     daily_stats = df.groupby('Date')[fill_cols].sum().reset_index()
 
-    # 5. 計算進階偵查指標
+    # 3. 計算進階偵查指標
     # (A) 頁面轉換率 (Page CVR)
     daily_stats['Page_CVR'] = np.where(
         daily_stats['連結頁面瀏覽次數'] > 0,
@@ -73,70 +50,75 @@ def analyze_with_forensics():
         (daily_stats['花費金額 (TWD)'] / daily_stats['曝光次數']) * 1000,
         0
     )
-
-    # 6. 輸出 CSV 報表
-    output_folder = os.path.dirname(file_path) # 存在跟原始檔案一樣的資料夾
-    output_csv_name = os.path.join(output_folder, '廣告分析報告_含異常偵測.csv')
     
-    output_cols = {
-        'Date': '日期',
-        '連結點擊次數': '點擊數',
-        '連結頁面瀏覽次數': '頁面瀏覽數(PV)',
-        'free course': '轉換數',
-        'Page_CVR': '頁面轉換率(%)', 
-        'Dropoff_Rate': '流量流失率(%)', 
-        'CPM': 'CPM' 
-    }
+    return daily_stats
+
+def plot_charts(plot_data):
+    """繪製分析圖表"""
+    fig, axes = plt.subplots(3, 1, figsize=(10, 15), sharex=True)
     
-    daily_stats.rename(columns=output_cols).to_csv(output_csv_name, index=False, encoding='utf-8-sig')
-    print(f"報表已儲存至：{output_csv_name}")
-
-    # 7. 繪製圖表 (包含您的三個假設驗證)
-    plt.style.use('ggplot')
-    # 處理中文字型 (嘗試自動偵測，若無則使用預設)
-    import matplotlib.font_manager as fm
-    plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'SimHei', 'Arial'] 
-    plt.rcParams['axes.unicode_minus'] = False # 解決負號顯示問題
-
-    # 過濾掉太早期的空值，只畫有數據的區間
-    start_date = daily_stats[daily_stats['曝光次數'] > 0]['Date'].min()
-    plot_data = daily_stats[daily_stats['Date'] >= start_date]
-
-    fig, axes = plt.subplots(3, 1, figsize=(12, 18), sharex=True)
-
     # 圖 1: 流量品質
     ax1 = axes[0]
-    ax1.plot(plot_data['Date'], plot_data['連結點擊次數'], label='連結點擊 (Clicks)', marker='o')
-    ax1.plot(plot_data['Date'], plot_data['連結頁面瀏覽次數'], label='頁面瀏覽 (PV)', linestyle='--')
-    ax1.set_title('流量品質監測 (異常低流失率可能為機器人)', fontsize=14)
+    ax1.plot(plot_data['Date'], plot_data['連結點擊次數'], label='Clicks', marker='o', color='tab:blue')
+    ax1.plot(plot_data['Date'], plot_data['連結頁面瀏覽次數'], label='PVs', linestyle='--', color='tab:green')
+    ax1.set_title('Traffic Quality (Gap Check)', fontsize=14)
     ax1.legend()
-    ax1.grid(True)
+    ax1.grid(True, alpha=0.3)
 
     # 圖 2: 頁面轉換率
     ax2 = axes[1]
-    ax2.plot(plot_data['Date'], plot_data['Page_CVR'], color='purple', label='頁面轉換率 (Page CVR)')
-    ax2.set_title('轉換信任度監測 (惡意留言會導致此指標大跌)', fontsize=14)
-    ax2.set_ylabel('轉換率 (%)')
+    ax2.plot(plot_data['Date'], plot_data['Page_CVR'], color='tab:purple', label='Page CVR (%)')
+    ax2.set_title('Conversion Trust (Impact of Comments)', fontsize=14)
+    ax2.set_ylabel('%')
     ax2.legend()
-    ax2.grid(True)
+    ax2.grid(True, alpha=0.3)
 
     # 圖 3: CPM 成本
     ax3 = axes[2]
-    ax3.plot(plot_data['Date'], plot_data['CPM'], color='red', label='CPM')
-    ax3.set_title('成本懲罰監測 (負面回饋會導致 CPM 上升)', fontsize=14)
-    ax3.set_ylabel('CPM (TWD)')
+    ax3.plot(plot_data['Date'], plot_data['CPM'], color='tab:red', label='CPM')
+    ax3.set_title('Cost Penalty Monitor', fontsize=14)
+    ax3.set_ylabel('TWD')
     ax3.legend()
-    ax3.grid(True)
+    ax3.grid(True, alpha=0.3)
 
-    # 設定日期格式
-    plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+    plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
     plt.xticks(rotation=45)
-    
-    output_img_name = os.path.join(output_folder, '廣告趨勢圖表_異常偵測.png')
     plt.tight_layout()
-    plt.savefig(output_img_name)
-    print(f"圖表已儲存至：{output_img_name}")
-    print("分析完成！")
+    
+    return fig
 
-if __name__ == "__main__":
-    analyze_with_forensics()
+# --- Streamlit 應用程式介面 ---
+st.title("🛡️ 廣告異常流量與詐欺偵測器")
+st.markdown("""
+請上傳 Facebook 廣告報表 (CSV)，系統將自動檢測：
+1. **機器人流量** (異常低的流失率)
+2. **惡意留言影響** (轉換率驟降)
+3. **演算法懲罰** (CPM 異常上升)
+""")
+
+uploaded_file = st.file_uploader("請將 CSV 檔案拖曳至此", type="csv")
+
+if uploaded_file is not None:
+    try:
+        # 讀取上傳的檔案
+        df = pd.read_csv(uploaded_file)
+        
+        # 執行分析
+        daily_stats = analyze_data(df)
+        
+        if daily_stats is not None:
+            st.success("分析完成！以下是檢測結果：")
+            
+            # 顯示圖表
+            # 過濾掉太早期的空值，只畫有數據的區間
+            start_date = daily_stats[daily_stats['曝光次數'] > 0]['Date'].min()
+            plot_data = daily_stats[daily_stats['Date'] >= start_date]
+            
+            fig = plot_charts(plot_data)
+            st.pyplot(fig)
+            
+            # 準備下載資料
+            # 1. CSV
+            csv_buffer = daily_stats.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+            
+            # 2. 圖片
