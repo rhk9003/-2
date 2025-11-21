@@ -5,146 +5,162 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import io
 
-# 設定中文字型 (為了讓雲端環境也能盡量顯示中文)
-# 在 Streamlit Cloud 上通常需要額外設定字型，這裡使用通用設定
+# --- 設定繪圖字型 (盡量支援中文) ---
 plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'SimHei', 'Arial', 'WenQuanYi Zen Hei']
 plt.rcParams['axes.unicode_minus'] = False
 
+def find_conversion_column(df):
+    """智慧偵測轉換欄位名稱 (處理 free course 與 free-course 的差異)"""
+    possible_names = ['free course', 'free-course', 'Free Course', 'Free-Course', '成果']
+    
+    # 1. 優先搜尋名稱完全符合的欄位
+    for name in possible_names:
+        if name in df.columns:
+            return name
+            
+    # 2. 若找不到，搜尋包含 'free' 和 'course' 的欄位
+    for col in df.columns:
+        if 'free' in col.lower() and 'course' in col.lower():
+            return col
+            
+    return None
+
 def analyze_data(df):
     """執行核心分析邏輯"""
-    # 1. 資料清理
+    # 1. 基本欄位檢查
     if '天數' not in df.columns:
-        st.error("錯誤：CSV 中找不到 '天數' 欄位，請確認匯出的報表格式是否正確。")
-        return None, None
+        st.error("錯誤：CSV 中找不到 '天數' 欄位。")
+        return None
 
     df['Date'] = pd.to_datetime(df['天數'])
     
-    fill_cols = ['曝光次數', '花費金額 (TWD)', '連結點擊次數', '連結頁面瀏覽次數', 'free course']
+    # 2. 偵測轉換欄位
+    conv_col = find_conversion_column(df)
+    if conv_col is None:
+        st.warning("⚠️ 警告：找不到 'free course' 相關欄位，轉換數將顯示為 0。")
+        df['Conversions'] = 0
+    else:
+        st.info(f"已自動偵測到轉換欄位：{conv_col}")
+        df['Conversions'] = pd.to_numeric(df[conv_col], errors='coerce').fillna(0)
+
+    # 3. 填補與轉換數值
+    fill_cols = ['曝光次數', '花費金額 (TWD)', '連結點擊次數', '連結頁面瀏覽次數']
     for col in fill_cols:
         if col in df.columns:
-            df[col] = df[col].fillna(0)
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         else:
             df[col] = 0
+            
+    # 4. 每日數據聚合
+    daily_stats = df.groupby('Date').agg({
+        '曝光次數': 'sum',
+        '花費金額 (TWD)': 'sum',
+        '連結點擊次數': 'sum',
+        'Conversions': 'sum'
+    }).reset_index()
 
-    # 2. 每日數據聚合
-    daily_stats = df.groupby('Date')[fill_cols].sum().reset_index()
+    # 5. 計算關鍵指標 (避免除以零)
+    # CPM
+    daily_stats['CPM'] = np.where(daily_stats['曝光次數'] > 0, 
+                                  (daily_stats['花費金額 (TWD)'] / daily_stats['曝光次數']) * 1000, 0)
+    # CTR (點擊率)
+    daily_stats['CTR'] = np.where(daily_stats['曝光次數'] > 0, 
+                                  (daily_stats['連結點擊次數'] / daily_stats['曝光次數']) * 100, 0)
+    # CVR (連結點擊轉換率)
+    daily_stats['CVR'] = np.where(daily_stats['連結點擊次數'] > 0, 
+                                  (daily_stats['Conversions'] / daily_stats['連結點擊次數']) * 100, 0)
 
-    # 3. 計算進階偵查指標
-    # (A) 頁面轉換率 (Page CVR)
-    daily_stats['Page_CVR'] = np.where(
-        daily_stats['連結頁面瀏覽次數'] > 0,
-        (daily_stats['free course'] / daily_stats['連結頁面瀏覽次數']) * 100,
-        0
-    )
-
-    # (B) 流量流失率 (Dropoff Rate)
-    daily_stats['Dropoff_Rate'] = np.where(
-        daily_stats['連結點擊次數'] > 0,
-        (daily_stats['連結點擊次數'] - daily_stats['連結頁面瀏覽次數']) / daily_stats['連結點擊次數'] * 100,
-        0
-    )
-
-    # (C) CPM (成本監測)
-    daily_stats['CPM'] = np.where(
-        daily_stats['曝光次數'] > 0,
-        (daily_stats['花費金額 (TWD)'] / daily_stats['曝光次數']) * 1000,
-        0
-    )
-    
     return daily_stats
 
 def plot_charts(plot_data):
-    """繪製分析圖表"""
-    fig, axes = plt.subplots(3, 1, figsize=(10, 15), sharex=True)
+    """繪製 7 大關鍵指標波動圖"""
+    # 設定畫布大小 (高一點以便容納所有圖表)
+    fig, axes = plt.subplots(7, 1, figsize=(12, 24), sharex=True)
     
-    # 圖 1: 流量品質
-    ax1 = axes[0]
-    ax1.plot(plot_data['Date'], plot_data['連結點擊次數'], label='Clicks', marker='o', color='tab:blue')
-    ax1.plot(plot_data['Date'], plot_data['連結頁面瀏覽次數'], label='PVs', linestyle='--', color='tab:green')
-    ax1.set_title('Traffic Quality (Gap Check)', fontsize=14)
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
+    # 定義要畫的指標：(欄位名, 中文標題, 線條顏色)
+    metrics = [
+        ('曝光次數', '曝光數 (Impressions)', 'tab:blue'),
+        ('花費金額 (TWD)', '花費 (Spend)', 'tab:green'),
+        ('CPM', 'CPM (每千次曝光成本)', 'tab:red'),
+        ('連結點擊次數', '連結點擊次數 (Link Clicks)', 'tab:orange'),
+        ('CTR', '點擊率 CTR (%)', 'tab:purple'),
+        ('Conversions', 'free course 轉換次數', 'tab:brown'),
+        ('CVR', '連結點擊-轉換轉換率 CVR (%)', 'tab:pink')
+    ]
 
-    # 圖 2: 頁面轉換率
-    ax2 = axes[1]
-    ax2.plot(plot_data['Date'], plot_data['Page_CVR'], color='tab:purple', label='Page CVR (%)')
-    ax2.set_title('Conversion Trust (Impact of Comments)', fontsize=14)
-    ax2.set_ylabel('%')
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-
-    # 圖 3: CPM 成本
-    ax3 = axes[2]
-    ax3.plot(plot_data['Date'], plot_data['CPM'], color='tab:red', label='CPM')
-    ax3.set_title('Cost Penalty Monitor', fontsize=14)
-    ax3.set_ylabel('TWD')
-    ax3.legend()
-    ax3.grid(True, alpha=0.3)
+    for ax, (col, title, color) in zip(axes, metrics):
+        ax.plot(plot_data['Date'], plot_data[col], marker='.', linestyle='-', color=color, linewidth=1.5)
+        ax.set_title(title, fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        
+        # 標註最大值
+        if not plot_data[col].empty and plot_data[col].max() > 0:
+            max_val = plot_data[col].max()
+            max_date = plot_data.loc[plot_data[col].idxmax(), 'Date']
+            ax.annotate(f'{max_val:.1f}', 
+                        xy=(max_date, max_val), 
+                        xytext=(10, 5), textcoords='offset points',
+                        arrowprops=dict(arrowstyle='->', color='black'))
 
     plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
     plt.xticks(rotation=45)
+    plt.xlabel('日期')
     plt.tight_layout()
     
     return fig
 
-# --- Streamlit 應用程式介面 ---
-st.title("🛡️ 廣告異常流量與詐欺偵測器")
-st.markdown("""
-請上傳 Facebook 廣告報表 (CSV)，系統將自動檢測：
-1. **機器人流量** (異常低的流失率)
-2. **惡意留言影響** (轉換率驟降)
-3. **演算法懲罰** (CPM 異常上升)
-""")
+# --- Streamlit 介面 ---
+st.title("📊 廣告成效核心指標看板")
+st.markdown("上傳 CSV 後，系統將自動偵測欄位並呈現您指定的 7 大指標波動。")
 
-uploaded_file = st.file_uploader("請將 CSV 檔案拖曳至此", type="csv")
+uploaded_file = st.file_uploader("請上傳廣告分析報表 (CSV)", type="csv")
 
 if uploaded_file is not None:
     try:
-        # 讀取上傳的檔案
         df = pd.read_csv(uploaded_file)
-        
-        # 執行分析
         daily_stats = analyze_data(df)
         
         if daily_stats is not None:
-            st.success("分析完成！以下是檢測結果：")
+            st.success("分析完成！")
             
-            # 顯示圖表
-            # 過濾掉太早期的空值，只畫有數據的區間
+            # 準備下載用的 CSV (欄位中文化)
+            output_cols = {
+                'Date': '日期',
+                '曝光次數': '曝光數',
+                '花費金額 (TWD)': '花費',
+                'CPM': 'CPM',
+                '連結點擊次數': '點擊次數',
+                'CTR': '點擊率(%)',
+                'Conversions': 'free course 轉換次數',
+                'CVR': '連結點擊-轉換轉換率(%)'
+            }
+            csv_df = daily_stats.rename(columns=output_cols)
+            
+            # 過濾掉完全沒數據的早期日期，讓圖表好看一點
             start_date = daily_stats[daily_stats['曝光次數'] > 0]['Date'].min()
-            plot_data = daily_stats[daily_stats['Date'] >= start_date]
-            
+            if pd.isna(start_date):
+                plot_data = daily_stats # 全空
+            else:
+                plot_data = daily_stats[daily_stats['Date'] >= start_date]
+
+            # 繪圖
             fig = plot_charts(plot_data)
             st.pyplot(fig)
             
-            # 準備下載資料
-            # 1. CSV
-            csv_buffer = daily_stats.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-            
-            # 2. 圖片
+            # 下載按鈕
+            csv_buffer = csv_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
             img_buffer = io.BytesIO()
             fig.savefig(img_buffer, format='png')
             img_buffer.seek(0)
             
             col1, col2 = st.columns(2)
             with col1:
-                st.download_button(
-                    label="📥 下載分析報表 (CSV)",
-                    data=csv_buffer,
-                    file_name="daily_ads_forensics.csv",
-                    mime="text/csv",
-                )
+                st.download_button("📥 下載報表 (CSV)", csv_buffer, "daily_metrics.csv", "text/csv")
             with col2:
-                st.download_button(
-                    label="🖼️ 下載趨勢圖表 (PNG)",
-                    data=img_buffer,
-                    file_name="daily_ads_trends.png",
-                    mime="image/png",
-                )
+                st.download_button("🖼️ 下載圖表 (PNG)", img_buffer, "daily_charts.png", "image/png")
                 
-            # 顯示數據預覽
-            st.subheader("數據明細預覽")
-            st.dataframe(daily_stats.tail(10))
-            
+            with st.expander("查看詳細數據"):
+                st.dataframe(csv_df)
+                
     except Exception as e:
-        st.error(f"無法處理檔案，請確認格式是否正確。錯誤訊息：{e}")
+        st.error(f"處理檔案時發生錯誤：{e}")
